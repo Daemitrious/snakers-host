@@ -6,11 +6,8 @@ use {
             Read, Result, Write,
         },
         net::{TcpListener, TcpStream},
-        sync::{
-            mpsc::{channel, Sender},
-            Arc, RwLock,
-        },
-        thread::{park, sleep, spawn, JoinHandle, Thread},
+        sync::{Arc, RwLock},
+        thread::{sleep, spawn},
         time::Duration,
     },
 };
@@ -60,12 +57,7 @@ impl Area {
             W => {
                 if area_i / self.rows > 0 {
                     p -= self.rows;
-
-                    if self.data[p] == EMPTY {
-                        true
-                    } else {
-                        false
-                    }
+                    self.data[p] == EMPTY
                 } else {
                     false
                 }
@@ -73,11 +65,7 @@ impl Area {
             A => {
                 if area_i % self.columns > 0 {
                     p -= 1;
-                    if self.data[p] == EMPTY {
-                        true
-                    } else {
-                        false
-                    }
+                    self.data[p] == EMPTY
                 } else {
                     false
                 }
@@ -85,11 +73,7 @@ impl Area {
             S => {
                 if area_i / self.rows < self.rows - 1 {
                     p += self.rows;
-                    if self.data[p] == EMPTY {
-                        true
-                    } else {
-                        false
-                    }
+                    self.data[p] == EMPTY
                 } else {
                     false
                 }
@@ -97,11 +81,7 @@ impl Area {
             D => {
                 if area_i % self.columns < self.columns - 1 {
                     p += 1;
-                    if self.data[p] == EMPTY {
-                        true
-                    } else {
-                        false
-                    }
+                    self.data[p] == EMPTY
                 } else {
                     false
                 }
@@ -137,10 +117,7 @@ impl Clients {
         None
     }
 
-    fn distribute(&mut self, area: &[u8], open: Arc<RwLock<bool>>, sender: Sender<bool>) {
-        //  Park
-        // sender.send(true).unwrap();
-
+    fn distribute(&mut self, area: &[u8], open: Arc<RwLock<bool>>) {
         //  Lock
         if let Ok(mut open_guard) = open.write() {
             *open_guard = false
@@ -165,15 +142,8 @@ impl Clients {
         if let Ok(mut open_guard) = open.write() {
             *open_guard = true
         }
-        //  Unpark
-        // sender.send(false).unwrap()
     }
 }
-
-// struct Data {
-//     clients: Clients,
-//     area: Area
-// }
 
 fn handle_client(
     area_i: Arc<RwLock<usize>>,
@@ -181,7 +151,6 @@ fn handle_client(
     area: Arc<RwLock<Area>>,
     clients: Arc<RwLock<Clients>>,
     open: Arc<RwLock<bool>>,
-    sender: Sender<bool>,
 ) -> Result<()> {
     if let Ok(area_guard) = area.read() {
         if let Ok(mut client_guard) = client.write() {
@@ -189,13 +158,14 @@ fn handle_client(
             client_guard.write_all(&[area_guard.columns as u8])?;
             client_guard.write_all(&area_guard.data)?;
 
-            client_guard.set_read_timeout(Some(Duration::from_millis(50)))?;
+            const WAIT: Duration = Duration::from_micros(1);
+
+            client_guard.set_read_timeout(Some(WAIT))?;
 
             drop(area_guard);
             drop(client_guard);
 
             loop {
-                // park();
                 if let Ok(open_guard) = open.read() {
                     if *open_guard {
                         drop(open_guard);
@@ -224,7 +194,6 @@ fn handle_client(
                                                             clients_guard.distribute(
                                                                 &area_guard.data,
                                                                 open.clone(),
-                                                                sender.clone(),
                                                             )
                                                         }
                                                     }
@@ -234,9 +203,9 @@ fn handle_client(
                                     }
                                 }
                                 Err(e) => match e.kind() {
-                                    TimedOut => (),
+                                    TimedOut => sleep(WAIT), //  Temporary CPU Usage fix
                                     ConnectionReset => return Err(e),
-                                    _ => (),
+                                    _ => unreachable!(),
                                 },
                             }
                         }
@@ -248,7 +217,7 @@ fn handle_client(
     Ok(())
 }
 
-fn main() -> Result<()> {
+fn main() {
     let area = Arc::new(RwLock::new({
         let (rows, columns) = (5, 5);
         Area {
@@ -264,99 +233,74 @@ fn main() -> Result<()> {
             .collect::<Vec<Option<Arc<RwLock<TcpStream>>>>>(),
     )));
 
-    let handles = Arc::new(RwLock::new(
-        (0..10)
-            .map(|_| None)
-            .collect::<Vec<Option<JoinHandle<()>>>>(),
-    ));
-
     let open = Arc::new(RwLock::new(true));
-    let (sender, receiver) = channel::<bool>();
 
     let thread_area = area.clone();
     let thread_clients = clients.clone();
-    let thread_handles = handles.clone();
     let thread_open = open.clone();
-    let thread_sender = sender.clone();
 
-    //  Listener thread
-    spawn(move || {
-        let thread_area = area.clone();
-        let thread_clients = clients.clone();
-        let thread_handles = handles.clone();
-        let thread_open = open.clone();
-        let thread_sender = sender.clone();
+    if let Ok(listener) = TcpListener::bind("127.0.0.1:6969") {
+        for stream in listener.incoming() {
+            let thread_area = thread_area.clone();
+            let thread_clients = thread_clients.clone();
+            let thread_open = thread_open.clone();
 
-        if let Ok(listener) = TcpListener::bind("127.0.0.1:6969") {
-            for stream in listener.incoming() {
-                let thread_area = area.clone();
-                let thread_clients = clients.clone();
-                let thread_handles = handles.clone();
-                let thread_open = open.clone();
-                let thread_sender = sender.clone();
+            spawn(move || {
+                if let Ok(client) = stream {
+                    if let Ok(clients_guard) = thread_clients.read() {
+                        if let Some(client_i) = clients_guard.find_vacancy() {
+                            drop(clients_guard);
 
-                spawn(move || {
-                    if let Ok(client) = stream {
-                        if let Ok(clients_guard) = thread_clients.read() {
-                            if let Some(client_i) = clients_guard.find_vacancy() {
-                                drop(clients_guard);
+                            if let Ok(area_guard) = thread_area.read() {
+                                if let Some(area_i) = area_guard.find_vacancy() {
+                                    drop(area_guard);
 
-                                if let Ok(area_guard) = thread_area.read() {
-                                    if let Some(area_i) = area_guard.find_vacancy() {
+                                    if let Ok(mut area_guard) = thread_area.write() {
+                                        area_guard.to_player(area_i);
                                         drop(area_guard);
 
-                                        if let Ok(mut area_guard) = thread_area.write() {
-                                            area_guard.to_player(area_i);
-                                            drop(area_guard);
+                                        if let Ok(mut clients_guard) = thread_clients.write() {
+                                            if let Ok(area_guard) = thread_area.read() {
+                                                clients_guard.distribute(
+                                                    &area_guard.data,
+                                                    thread_open.clone(),
+                                                );
+                                                drop(area_guard);
 
-                                            if let Ok(mut clients_guard) = thread_clients.write() {
-                                                if let Ok(area_guard) = thread_area.read() {
-                                                    clients_guard.distribute(
-                                                        &area_guard.data,
-                                                        thread_open.clone(),
-                                                        thread_sender.clone(),
-                                                    );
-                                                    drop(area_guard);
+                                                let client = Arc::new(RwLock::new(client));
+                                                clients_guard.set(client.clone(), client_i);
+                                                drop(clients_guard);
 
-                                                    let client = Arc::new(RwLock::new(client));
-                                                    clients_guard.set(client.clone(), client_i);
-                                                    drop(clients_guard);
+                                                let area_i = Arc::new(RwLock::new(area_i));
 
-                                                    let area_i = Arc::new(RwLock::new(area_i));
+                                                if let Err(_) = handle_client(
+                                                    area_i.clone(),
+                                                    client,
+                                                    thread_area.clone(),
+                                                    thread_clients.clone(),
+                                                    thread_open.clone(),
+                                                ) {
+                                                    if let Ok(mut clients_guard) =
+                                                        thread_clients.write()
+                                                    {
+                                                        clients_guard.remove(client_i)
+                                                    }
+                                                    if let Ok(mut area_guard) = thread_area.write()
+                                                    {
+                                                        if let Ok(area_i_guard) = area_i.read() {
+                                                            area_guard.to_empty(*area_i_guard);
+                                                            drop(area_guard);
 
-                                                    if let Err(_) = handle_client(
-                                                        area_i.clone(),
-                                                        client,
-                                                        thread_area.clone(),
-                                                        thread_clients.clone(),
-                                                        thread_open.clone(),
-                                                        thread_sender.clone(),
-                                                    ) {
-                                                        if let Ok(mut clients_guard) =
-                                                            thread_clients.write()
-                                                        {
-                                                            clients_guard.remove(client_i)
-                                                        }
-                                                        if let Ok(mut area_guard) =
-                                                            thread_area.write()
-                                                        {
-                                                            if let Ok(area_i_guard) = area_i.read()
+                                                            if let Ok(mut clients_guard) =
+                                                                thread_clients.write()
                                                             {
-                                                                area_guard.to_empty(*area_i_guard);
-                                                                drop(area_guard);
-
-                                                                if let Ok(mut clients_guard) =
-                                                                    thread_clients.write()
+                                                                if let Ok(area_guard) =
+                                                                    thread_area.read()
                                                                 {
-                                                                    if let Ok(area_guard) =
-                                                                        thread_area.read()
-                                                                    {
-                                                                        clients_guard.distribute(
-                                                                            &area_guard.data,
-                                                                            thread_open.clone(),
-                                                                            thread_sender.clone(),
-                                                                        )
-                                                                    }
+                                                                    clients_guard.distribute(
+                                                                        &area_guard.data,
+                                                                        thread_open.clone(),
+                                                                    )
                                                                 }
                                                             }
                                                         }
@@ -369,17 +313,8 @@ fn main() -> Result<()> {
                             }
                         }
                     }
-                });
-            }
-        }
-    });
-
-    //  Park threads when !`open` to decrease CPU load
-    loop {
-        if let Ok(park) = receiver.recv() {
-            if park {
-            } else {
-            }
+                }
+            });
         }
     }
 }
