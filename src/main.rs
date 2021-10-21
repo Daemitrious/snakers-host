@@ -5,6 +5,7 @@ use {
     area::Area,
     clients::Clients,
     std::{
+        env::args,
         io::{
             ErrorKind::{ConnectionReset, TimedOut},
             Read, Result, Write,
@@ -109,7 +110,24 @@ fn main() {
     let thread_clients = clients.clone();
     let thread_open = open.clone();
 
-    if let Ok(listener) = TcpListener::bind("127.0.0.1:6969") {
+    if let Ok(listener) = TcpListener::bind(
+        if let Some(tsa) = (|| -> Option<String> {
+            let mut a = args();
+            if a.len() == 3 {
+                let mut tsa = "".to_owned();
+                tsa.push_str(&a.nth(1)?);
+                tsa.push(':');
+                tsa.push_str(&a.next()?);
+                Some(tsa)
+            } else {
+                None
+            }
+        })() {
+            tsa
+        } else {
+            String::from("127.0.0.1:6969")
+        },
+    ) {
         for stream in listener.incoming() {
             let thread_area = thread_area.clone();
             let thread_clients = thread_clients.clone();
@@ -150,7 +168,7 @@ fn main() {
                                                     thread_clients.clone(),
                                                     thread_open.clone(),
                                                 ) {
-                                                    println!("{}", e)
+                                                    println!("{:?}", e)
                                                 }
 
                                                 if let Ok(mut clients_guard) =
