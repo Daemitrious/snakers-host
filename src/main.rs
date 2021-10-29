@@ -1,9 +1,11 @@
 mod area;
 mod clients;
+mod direction;
 
 use {
     area::Area,
     clients::Clients,
+    direction::Direction,
     std::{
         env::args,
         io::{
@@ -26,6 +28,8 @@ fn handle_client(
 ) -> Result<()> {
     Ok(if let Ok(area_guard) = area.read() {
         if let Ok(mut client_guard) = client.write() {
+            client_guard.write_all(&[*area_i.read().unwrap() as u8])?;
+
             client_guard.write_all(&[area_guard.rows as u8])?;
             client_guard.write_all(&[area_guard.columns as u8])?;
             client_guard.write_all(&area_guard.data)?;
@@ -51,22 +55,26 @@ fn handle_client(
 
                                     if let Ok(mut area_guard) = area.write() {
                                         if let Ok(area_i_guard) = area_i.read() {
-                                            if let Some(i) =
-                                                area_guard.move_player(key[0], *area_i_guard)
-                                            {
-                                                drop(area_guard);
-                                                drop(area_i_guard);
-
-                                                if let Ok(mut area_i_guard) = area_i.write() {
-                                                    *area_i_guard = i;
+                                            if let Some(direction) = Direction::from_key(key[0]) {
+                                                if let Some(i) = area_guard
+                                                    .attempt_move(direction, *area_i_guard)
+                                                {
+                                                    drop(area_guard);
                                                     drop(area_i_guard);
 
-                                                    if let Ok(mut clients_guard) = clients.write() {
-                                                        if let Ok(area_guard) = area.read() {
-                                                            clients_guard.distribute(
-                                                                &area_guard.data,
-                                                                open.clone(),
-                                                            )
+                                                    if let Ok(mut area_i_guard) = area_i.write() {
+                                                        *area_i_guard = i;
+                                                        drop(area_i_guard);
+
+                                                        if let Ok(mut clients_guard) =
+                                                            clients.write()
+                                                        {
+                                                            if let Ok(area_guard) = area.read() {
+                                                                clients_guard.distribute(
+                                                                    &area_guard.data,
+                                                                    open.clone(),
+                                                                )
+                                                            }
                                                         }
                                                     }
                                                 }
