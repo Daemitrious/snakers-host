@@ -1,4 +1,7 @@
-use rand::{thread_rng, Rng};
+use {
+    crate::{Direction, Direction::*},
+    rand::{thread_rng, Rng},
+};
 
 pub struct Area {
     pub data: Vec<u8>,
@@ -30,46 +33,42 @@ impl Area {
         }
     }
 
-    pub fn move_player(&mut self, key: u8, area_i: usize) -> Option<usize> {
+    pub fn attempt_move(&mut self, direction: Direction, area_i: usize) -> Option<usize> {
+        let new = self.can_move(direction, area_i)?;
+
+        self.to_empty(area_i);
+        self.to_player(new);
+
+        Some(new)
+    }
+
+    fn can_move(&self, direction: Direction, area_i: usize) -> Option<usize> {
         let mut p = area_i.clone();
 
-        if match key {
-            119 => {
-                if area_i / self.rows > 0 {
+        match direction {
+            W => {
+                if p / self.rows > 0 {
                     p -= self.rows;
-                    self.data[p] == 32
-                } else {
-                    false
                 }
             }
-            97 => {
-                if area_i % self.columns > 0 {
+            A => {
+                if p % self.columns > 0 {
                     p -= 1;
-                    self.data[p] == 32
-                } else {
-                    false
                 }
             }
-            115 => {
-                if area_i / self.rows < self.rows - 1 {
+            S => {
+                if p / self.rows < self.rows - 1 {
                     p += self.rows;
-                    self.data[p] == 32
-                } else {
-                    false
                 }
             }
-            100 => {
-                if area_i % self.columns < self.columns - 1 {
+            D => {
+                if p % self.columns < self.columns - 1 {
                     p += 1;
-                    self.data[p] == 32
-                } else {
-                    false
                 }
             }
-            _ => unreachable!(),
-        } {
-            self.to_empty(area_i);
-            self.to_player(p);
+        }
+
+        if p != area_i && self.data[p] != 111 {
             Some(p)
         } else {
             None
