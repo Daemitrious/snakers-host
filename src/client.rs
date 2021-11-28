@@ -1,9 +1,9 @@
-use crate::{Arc, RwLock, TcpStream, Write};
+use crate::{Lock, TcpStream, Write};
 
-pub struct Clients(pub Vec<Option<Arc<RwLock<TcpStream>>>>);
+pub struct Clients(pub Vec<Option<Lock<TcpStream>>>);
 
 impl Clients {
-    pub fn set(&mut self, client: Arc<RwLock<TcpStream>>, client_i: usize) {
+    pub fn set(&mut self, client: Lock<TcpStream>, client_i: usize) {
         self.0[client_i] = Some(client)
     }
 
@@ -20,7 +20,7 @@ impl Clients {
         None
     }
 
-    pub fn distribute(&mut self, area: &[u8], open: Arc<RwLock<bool>>) {
+    pub fn distribute(&mut self, area: &[u8], open: Lock<bool>) {
         //  Lock
         if let Ok(mut open_guard) = open.write() {
             *open_guard = false
@@ -38,9 +38,11 @@ impl Clients {
             }
         }
 
+        //  Remove any lost clients
         for i in failed.into_iter() {
             self.0[i] = None
         }
+
         //  Unlock
         if let Ok(mut open_guard) = open.write() {
             *open_guard = true

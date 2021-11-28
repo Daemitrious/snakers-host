@@ -1,5 +1,5 @@
 use {
-    crate::{Direction, Direction::*},
+    crate::{Key, Key::*},
     rand::{thread_rng, Rng},
 };
 
@@ -10,12 +10,20 @@ pub struct Area {
 }
 
 impl Area {
-    pub fn to_player(&mut self, area_i: usize) {
-        self.data[area_i] = 111;
+    pub const fn get_rows_byte(&self) -> [u8; 1] {
+        [self.rows as u8]
     }
 
-    pub fn to_empty(&mut self, area_i: usize) {
-        self.data[area_i] = 32
+    pub const fn get_columns_byte(&self) -> [u8; 1] {
+        [self.columns as u8]
+    }
+
+    pub fn to_player(&mut self, position: usize) {
+        self.data[position] = 111;
+    }
+
+    pub fn to_empty(&mut self, position: usize) {
+        self.data[position] = 32
     }
 
     pub fn find_vacancy(&self) -> Option<usize> {
@@ -33,19 +41,19 @@ impl Area {
         }
     }
 
-    pub fn attempt_move(&mut self, direction: Direction, area_i: usize) -> Option<usize> {
-        let new = self.can_move(direction, area_i)?;
+    pub fn attempt_move(&mut self, key: Key, position: usize) -> Option<usize> {
+        let new = self.can_move(key, position)?;
 
-        self.to_empty(area_i);
+        self.to_empty(position);
         self.to_player(new);
 
         Some(new)
     }
 
-    fn can_move(&self, direction: Direction, area_i: usize) -> Option<usize> {
-        let mut p = area_i.clone();
+    fn can_move(&self, key: Key, position: usize) -> Option<usize> {
+        let mut p = position.clone();
 
-        match direction {
+        match key {
             W => {
                 if p / self.rows > 0 {
                     p -= self.rows;
@@ -66,9 +74,10 @@ impl Area {
                     p += 1;
                 }
             }
+            _ => unreachable!(),
         }
 
-        if p != area_i && self.data[p] != 111 {
+        if p != position && self.data[p] != 111 {
             Some(p)
         } else {
             None

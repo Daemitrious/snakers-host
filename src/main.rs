@@ -1,11 +1,13 @@
 mod area;
-mod clients;
-mod direction;
+mod client;
+mod intention;
+mod key;
 
 use {
     area::Area,
-    clients::Clients,
-    direction::Direction,
+    client::Clients,
+    intention::{Intention, Intention::*},
+    key::Key,
     std::{
         env::args,
         io::{
@@ -19,20 +21,25 @@ use {
     },
 };
 
+type Lock<T> = Arc<RwLock<T>>;
+
+fn lock<T>(element: T) -> Lock<T> {
+    Arc::new(RwLock::new(element))
+}
+
 fn handle_client(
-    area_i: Arc<RwLock<usize>>,
-    client: Arc<RwLock<TcpStream>>,
-    area: Arc<RwLock<Area>>,
-    clients: Arc<RwLock<Clients>>,
-    open: Arc<RwLock<bool>>,
+    position: Lock<usize>,
+    client: Lock<TcpStream>,
+    area: Lock<Area>,
+    clients: Lock<Clients>,
+    open: Lock<bool>,
 ) -> Result<()> {
     Ok(if let Ok(area_guard) = area.read() {
         if let Ok(mut client_guard) = client.write() {
-            client_guard.write_all(&[*area_i.read().unwrap() as u8])?;
+            client_guard.write_all(&[*position.read().unwrap() as u8])?;
 
-            client_guard.write_all(&[area_guard.rows as u8])?;
-            client_guard.write_all(&[area_guard.columns as u8])?;
-            client_guard.write_all(&area_guard.data)?;
+            client_guard.write_all(&area_guard.get_rows_byte())?;
+            client_guard.write_all(&area_guard.get_columns_byte())?;
 
             const WAIT: Duration = Duration::from_micros(1);
 
@@ -49,44 +56,66 @@ fn handle_client(
                         if let Ok(mut client_guard) = client.write() {
                             let key = &mut [0; 1];
 
-                            match client_guard.read_exact(key) {
-                                Ok(()) => {
-                                    drop(client_guard);
+                            let read_result = client_guard.read_exact(key);
+                            drop(client_guard);
 
-                                    if let Ok(mut area_guard) = area.write() {
-                                        if let Ok(area_i_guard) = area_i.read() {
-                                            if let Some(direction) = Direction::from_key(key[0]) {
-                                                if let Some(i) = area_guard
-                                                    .attempt_move(direction, *area_i_guard)
-                                                {
-                                                    drop(area_guard);
-                                                    drop(area_i_guard);
+                            if let Err(error) = read_result {
+                                match error.kind() {
+                                    TimedOut => sleep(WAIT),
+                                    ConnectionReset => return Err(error),
+                                    _ => {
+                                        println!("Unreachable:");
+                                        return Err(error);
+                                    }
+                                }
+                            } else {
+                                if let Some(key) = Key::from_byte(key[0]) {
+                                    match Intention::from(key) {
+                                        Move(direction) => {
+                                            if let Ok(mut area_guard) = area.write() {
+                                                if let Ok(position_guard) = position.read() {
+                                                    if let Some(i) = area_guard
+                                                        .attempt_move(direction, *position_guard)
+                                                    {
+                                                        drop(area_guard);
+                                                        drop(position_guard);
 
-                                                    if let Ok(mut area_i_guard) = area_i.write() {
-                                                        *area_i_guard = i;
-                                                        drop(area_i_guard);
-
-                                                        if let Ok(mut clients_guard) =
-                                                            clients.write()
-                                                        {
-                                                            if let Ok(area_guard) = area.read() {
-                                                                clients_guard.distribute(
-                                                                    &area_guard.data,
-                                                                    open.clone(),
-                                                                )
+                                                        if let Ok(mut client_guard) = client.write() {
+                                                            client_guard.write_all(&[0; 1])?;
+                                                            drop(client_guard);
+    
+                                                            if let Ok(mut position_guard) =
+                                                                position.write()
+                                                            {
+                                                                *position_guard = i;
+                                                                drop(position_guard);
+    
+                                                                if let Ok(mut clients_guard) =
+                                                                    clients.write()
+                                                                {
+                                                                    if let Ok(area_guard) = area.read()
+                                                                    {
+                                                                        clients_guard.distribute(
+                                                                            &area_guard.data,
+                                                                            open.clone(),
+                                                                        )
+                                                                    }
+                                                                }
                                                             }
                                                         }
                                                     }
                                                 }
                                             }
                                         }
+                                        Exit => {
+                                            if let Ok(mut client_guard) = client.write() {
+                                                client_guard.write_all(&[0])?;
+                                            }
+                                            //  Placed outside of previous statement in case of `Err(_)`
+                                            break;
+                                        }
                                     }
                                 }
-                                Err(e) => match e.kind() {
-                                    TimedOut => sleep(WAIT),
-                                    ConnectionReset => return Err(e),
-                                    _ => unreachable!(),
-                                },
                             }
                         }
                     }
@@ -97,22 +126,22 @@ fn handle_client(
 }
 
 fn main() {
-    let area = Arc::new(RwLock::new({
+    let area = lock({
         let (rows, columns) = (10, 10);
         Area {
             data: (0..columns * rows).map(|_| 32).collect(),
             rows,
             columns,
         }
-    }));
+    });
 
-    let clients = Arc::new(RwLock::new(Clients(
+    let clients = lock(Clients(
         (0..10)
             .map(|_| None)
-            .collect::<Vec<Option<Arc<RwLock<TcpStream>>>>>(),
-    )));
+            .collect::<Vec<Option<Lock<TcpStream>>>>(),
+    ));
 
-    let open = Arc::new(RwLock::new(true));
+    let open = lock(true);
 
     let thread_area = area.clone();
     let thread_clients = clients.clone();
@@ -120,12 +149,12 @@ fn main() {
 
     if let Ok(listener) = TcpListener::bind(
         if let Some(tsa) = (|| -> Option<String> {
-            let mut a = args();
-            if a.len() == 3 {
+            let mut arguments = args();
+            if arguments.len() == 3 {
                 let mut tsa = "".to_owned();
-                tsa.push_str(&a.nth(1)?);
+                tsa.push_str(&arguments.nth(1)?);
                 tsa.push(':');
-                tsa.push_str(&a.next()?);
+                tsa.push_str(&arguments.next()?);
                 Some(tsa)
             } else {
                 None
@@ -133,7 +162,7 @@ fn main() {
         })() {
             tsa
         } else {
-            String::from("127.0.0.1:6969")
+            String::from("127.0.0.1:8080")
         },
     ) {
         for stream in listener.incoming() {
@@ -148,11 +177,11 @@ fn main() {
                             drop(clients_guard);
 
                             if let Ok(area_guard) = thread_area.read() {
-                                if let Some(area_i) = area_guard.find_vacancy() {
+                                if let Some(position) = area_guard.find_vacancy() {
                                     drop(area_guard);
 
                                     if let Ok(mut area_guard) = thread_area.write() {
-                                        area_guard.to_player(area_i);
+                                        area_guard.to_player(position);
                                         drop(area_guard);
 
                                         if let Ok(mut clients_guard) = thread_clients.write() {
@@ -163,20 +192,20 @@ fn main() {
                                                 );
                                                 drop(area_guard);
 
-                                                let client = Arc::new(RwLock::new(client));
+                                                let client = lock(client);
                                                 clients_guard.set(client.clone(), client_i);
                                                 drop(clients_guard);
 
-                                                let area_i = Arc::new(RwLock::new(area_i));
+                                                let position = lock(position);
 
-                                                if let Err(e) = handle_client(
-                                                    area_i.clone(),
-                                                    client,
+                                                if let Err(error) = handle_client(
+                                                    position.clone(),
+                                                    client.clone(),
                                                     thread_area.clone(),
                                                     thread_clients.clone(),
                                                     thread_open.clone(),
                                                 ) {
-                                                    println!("{:?}", e)
+                                                    println!("{:?}", error)
                                                 }
 
                                                 if let Ok(mut clients_guard) =
@@ -185,8 +214,8 @@ fn main() {
                                                     clients_guard.remove(client_i)
                                                 }
                                                 if let Ok(mut area_guard) = thread_area.write() {
-                                                    if let Ok(area_i_guard) = area_i.read() {
-                                                        area_guard.to_empty(*area_i_guard);
+                                                    if let Ok(position_guard) = position.read() {
+                                                        area_guard.to_empty(*position_guard);
                                                         drop(area_guard);
 
                                                         if let Ok(mut clients_guard) =
