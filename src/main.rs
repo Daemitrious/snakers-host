@@ -80,20 +80,22 @@ fn handle_client(
                                                         drop(area_guard);
                                                         drop(position_guard);
 
-                                                        if let Ok(mut client_guard) = client.write() {
+                                                        if let Ok(mut client_guard) = client.write()
+                                                        {
                                                             client_guard.write_all(&[0; 1])?;
                                                             drop(client_guard);
-    
+
                                                             if let Ok(mut position_guard) =
                                                                 position.write()
                                                             {
                                                                 *position_guard = i;
                                                                 drop(position_guard);
-    
+
                                                                 if let Ok(mut clients_guard) =
                                                                     clients.write()
                                                                 {
-                                                                    if let Ok(area_guard) = area.read()
+                                                                    if let Ok(area_guard) =
+                                                                        area.read()
                                                                     {
                                                                         clients_guard.distribute(
                                                                             &area_guard.data,
